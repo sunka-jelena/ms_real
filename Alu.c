@@ -21,9 +21,10 @@ static struct device *my_device;
 static struct cdev *my_cdev;
 
 int regA, regB, regC, regD, carry;
-int rezultat;
+int rezultat,format=1;
 int pos = 0;
 int endRead = 0;
+int rezultat_binarni[8]={0,0,0,0,0,0,0,0};
 
 int alu_open(struct inode *pinode, struct file *pfile);
 int alu_close(struct inode *pinode, struct file *pfile);
@@ -58,12 +59,44 @@ ssize_t alu_read(struct file *pfile, char __user *buffer, size_t length, loff_t 
 	char buff[BUFF_SIZE];
 	long int len;
 
-		
-        len = scnprintf(buff,BUFF_SIZE , "0x%x ", rezultat);
-	ret = copy_to_user(buffer, buff, len);
+	if (endRead)
+	{
+		endRead=0;
+		printk(KERN_INFO "Succesfully read from file\n");
+		return 0;
+	}	
+	else
+	{
+		if(format==1)
+		{
+			len = scnprintf(buff,BUFF_SIZE , "0x%x , %d", rezultat,carry);
+			ret = copy_to_user(buffer, buff, len);
+			endRead=1;
+	        }
+		else if (format==2)
+		{
+			len = scnprintf(buff,BUFF_SIZE , "%d , %d", rezultat,carry);
+			ret = copy_to_user(buffer, buff, len);
+			endRead=1;
+	        }
+		else if(format==3)
+		{	
+			if(pos<8)
+			{
+				len = scnprintf(buff,BUFF_SIZE , "%d", rezultat_binarni[7-pos]);
+				ret = copy_to_user(buffer, buff, len);
+				pos++;
+			}
+			else 
+			{	
+				endRead=1;
+				pos=0;
+			}
+	        }
+
+	}
 	if(ret)
 		return -EFAULT;
-	printk(KERN_INFO "Succesfully read from file\n");
 
 	return len;
 }
@@ -73,11 +106,12 @@ ssize_t alu_write(struct file *pfile, const char *buffer, size_t length, loff_t 
 	int ret;
 	char buff[BUFF_SIZE];
 	char* ptr;
-	char oznaka_registar;
+	char oznaka_registar,slovo1,slovo2,slovo3;
 	char sabirak1,sabirak2,operacija;
 	int vrednost; 
 	int prvi_op=0,drugi_op=0;
-	
+	int promenljiva;
+	int i;
 	ret=copy_from_user(buff, buffer, length);
 
 
@@ -114,7 +148,20 @@ ssize_t alu_write(struct file *pfile, const char *buffer, size_t length, loff_t 
   			printk(KERN_INFO "Upisana je vrednost %#04x u reg%c", regD, oznaka_registar);
   		}
   	}
-  	
+	else if(!strncmp(buff,"format=",7)) 
+	{
+		ret=sscanf(buff, "format=%c%c%c", &slovo1, &slovo2, &slovo3);
+		if(slovo1=='h' && slovo2=='e' && slovo3=='x')
+			format=1; //hex
+		
+		else if(slovo1=='d' && slovo2=='e' && slovo3=='c')
+			format=2; //dec
+		
+	        else if(slovo1=='b' && slovo2=='i' && slovo3=='n')
+			format=3; //bin
+
+			
+	}
   	else 
   	{
   		ret = sscanf(buff, "reg%c %c reg%c", &sabirak1, &operacija, &sabirak2);
@@ -160,7 +207,28 @@ ssize_t alu_write(struct file *pfile, const char *buffer, size_t length, loff_t 
 					  break;
 		                default : printk(KERN_WARNING "Operacija je +,-,*,/");
 			};
+
+			if (rezultat>255)
+			{	
+				rezultat=rezultat-255;
+				carry=1;
+			}
+			else if (rezultat<0)
+			{
+				rezultat=rezultat+255;
+				carry=1;
+			}
+			else 
+				carry=0;
+
+		
+			promenljiva=rezultat;
 	
+			for(i=0;i<8;i++)
+			{
+				rezultat_binarni[i]=promenljiva%2;
+				promenljiva=promenljiva/2;
+			}
 		}
 
 
@@ -177,6 +245,8 @@ static int __init alu_init(void)
    regC=0;
    regD=0;
    rezultat=0;
+   carry=0;
+   format=1;
 
    ret = alloc_chrdev_region(&my_dev_id, 0, 1, "alu");
    if (ret){
