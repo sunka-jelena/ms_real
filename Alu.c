@@ -10,6 +10,8 @@
 #include <linux/errno.h>
 #include <linux/device.h>
 #include <asm/uaccess.h>
+#include <linux/wait.h>
+
 #define BUFF_SIZE 20
 #define register_size 8
 
@@ -20,12 +22,15 @@ static struct class *my_class;
 static struct device *my_device;
 static struct cdev *my_cdev;
 
+DECLARE_WAIT_QUEUE_HEAD(readQ);
+DECLARE_WAIT_QUEUE_HEAD(writeQ);
+
 int regA, regB, regC, regD, carry;
 int rezultat,format=1;
 int pos = 0;
 int endRead = 0;
 int rezultat_binarni[8]={0,0,0,0,0,0,0,0};
-
+int flag;
 int alu_open(struct inode *pinode, struct file *pfile);
 int alu_close(struct inode *pinode, struct file *pfile);
 ssize_t alu_read(struct file *pfile, char __user *buffer, size_t length, loff_t *offset);
@@ -61,6 +66,9 @@ ssize_t alu_read(struct file *pfile, char __user *buffer, size_t length, loff_t 
 
 	if (endRead)
 	{
+		flag=0;
+		wake_up_interruptible(&writeQ);
+
 		endRead=0;
 		printk(KERN_INFO "Succesfully read from file\n");
 		return 0;
@@ -89,6 +97,9 @@ ssize_t alu_read(struct file *pfile, char __user *buffer, size_t length, loff_t 
 			}
 			else 
 			{	
+				len = scnprintf(buff,BUFF_SIZE , " , %d ", carry);
+				ret = copy_to_user(buffer, buff, len);
+
 				endRead=1;
 				pos=0;
 			}
@@ -122,51 +133,69 @@ ssize_t alu_write(struct file *pfile, const char *buffer, size_t length, loff_t 
 	if((!strncmp(buff,"regA=",5) || (!strncmp(buff,"regB=",5)) || (!strncmp(buff,"regC=",5)) || (!strncmp(buff,"regD=",5))))                                          
   	{
   		ret=sscanf(buff, "reg%c=%x", &oznaka_registar, &vrednost);
+		
+  		if(ret==2)
+		{	
+  			if(oznaka_registar=='A')
+  			{
+  				regA=vrednost;
+  				printk(KERN_INFO "Upisana je vrednost %#04x u reg%c", regA, oznaka_registar);
+  			}			
 
-  	
-  		if(oznaka_registar=='A')
-  		{
-  			regA=vrednost;
-  			printk(KERN_INFO "Upisana je vrednost %#04x u reg%c", regA, oznaka_registar);
-  		}			
-
-  		if(oznaka_registar=='B')
-  		{
-  			regB=vrednost;
-  			printk(KERN_INFO "Upisana je vrednost %#04x u reg%c", regB, oznaka_registar);
-  		}
+  			if(oznaka_registar=='B')
+  			{
+  				regB=vrednost;
+  				printk(KERN_INFO "Upisana je vrednost %#04x u reg%c", regB, oznaka_registar);
+  			}
   		
-  		if(oznaka_registar=='C')
-  		{
-  			regC=vrednost;
-  			printk(KERN_INFO "Upisana je vrednost %#04x u reg%c", regC, oznaka_registar);
-  		}
+  			if(oznaka_registar=='C')
+  			{
+  				regC=vrednost;
+  				printk(KERN_INFO "Upisana je vrednost %#04x u reg%c", regC, oznaka_registar);
+  			}	
   	    	
-  	    	if(oznaka_registar=='D')
-  		{
-  			regD=vrednost;
-  			printk(KERN_INFO "Upisana je vrednost %#04x u reg%c", regD, oznaka_registar);
-  		}
+  	    		if(oznaka_registar=='D')
+  			{
+  				regD=vrednost;
+  				printk(KERN_INFO "Upisana je vrednost %#04x u reg%c", regD, oznaka_registar);
+  			}
+		}
+		else 
+			printk(KERN_WARNING "Pogresan format unosa");
+
   	}
 	else if(!strncmp(buff,"format=",7)) 
 	{
 		ret=sscanf(buff, "format=%c%c%c", &slovo1, &slovo2, &slovo3);
-		if(slovo1=='h' && slovo2=='e' && slovo3=='x')
-			format=1; //hex
+		if(ret==3)
+		{	
+			if(slovo1=='h' && slovo2=='e' && slovo3=='x')
+				format=1; //hex
 		
-		else if(slovo1=='d' && slovo2=='e' && slovo3=='c')
-			format=2; //dec
+			else if(slovo1=='d' && slovo2=='e' && slovo3=='c')
+				format=2; //dec
 		
-	        else if(slovo1=='b' && slovo2=='i' && slovo3=='n')
-			format=3; //bin
+	        	else if(slovo1=='b' && slovo2=='i' && slovo3=='n')
+				format=3; //bin
+		}
+		else 
+			printk(KERN_WARNING "Pogresan format unosa");
 
 			
 	}
   	else 
   	{
+		if(wait_event_interruptible(writeQ,(flag==0)))
+		{	
+			//printk(KERN_WARNING "Proces je blokiran");
+	
+			return -ERESTARTSYS;
+		}
+			
   		ret = sscanf(buff, "reg%c %c reg%c", &sabirak1, &operacija, &sabirak2);
 		if(ret == 3)
-		{
+		{	
+			flag=1;
 			switch(sabirak1)
 			{
 				case 'A': prvi_op=regA;
@@ -230,10 +259,14 @@ ssize_t alu_write(struct file *pfile, const char *buffer, size_t length, loff_t 
 				promenljiva=promenljiva/2;
 			}
 		}
-
+		else 
+			printk(KERN_WARNING "Pogresan format unosa");
+		
+	//	wake_up_interruptible(&writeQ);
 
 	}
-	
+	//	wake_up_interruptible(&writeQ);
+
 	return length;
 }
 
@@ -247,6 +280,7 @@ static int __init alu_init(void)
    rezultat=0;
    carry=0;
    format=1;
+   flag=0;
 
    ret = alloc_chrdev_region(&my_dev_id, 0, 1, "alu");
    if (ret){
